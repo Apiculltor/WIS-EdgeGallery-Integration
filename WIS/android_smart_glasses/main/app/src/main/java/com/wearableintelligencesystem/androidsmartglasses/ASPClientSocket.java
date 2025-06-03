@@ -657,18 +657,65 @@ public class ASPClientSocket {
         }
     }
 
+    public void sendJson(JSONObject jsonObject) {
+        if (aspWebSocketManager != null && aspWebSocketManager.isConnectionOpen()) {
+            try {
+                // Add the MESSAGE_TYPE_LOCAL field if it's not already there,
+                // assuming the main type is in jsonObject.getString(MessageTypes.MESSAGE_TYPE_LOCAL)
+                // For simplicity, let's assume the jsonObject is fully formed by WearableAiService
+                String messageString = jsonObject.toString();
+                Log.d(TAG, "Sending JSON via WebSocket: " + messageString.substring(0, Math.min(messageString.length(), 100)));
+                aspWebSocketManager.send(messageString);
+            } catch (Exception e) { // Catch generic exception from WebSocket send
+                Log.e(TAG, "Error sending JSON via WebSocket", e);
+            }
+        } else {
+            Log.w(TAG, "Cannot send JSON, WebSocket not connected or manager is null.");
+        }
+    }
+
     public static void destroy(){
         killme = true;
 
-        aspWebSocketManager.destroy();
-        handler.removeCallbacksAndMessages(null);
-
-        try {
-            SendThread.join();
-            ReceiveThread.join();
-            SocketThread.join();
-        } catch (InterruptedException e){
-            e.printStackTrace();
+        if (aspWebSocketManager != null) { // Check for null before calling destroy
+            aspWebSocketManager.destroy();
         }
+        if (handler != null) { // Check for null
+            handler.removeCallbacksAndMessages(null);
+        }
+
+        // Interrupt threads safely
+        stopThread(SendThread);
+        stopThread(ReceiveThread);
+        stopThread(SocketThread);
+        stopThread(WebSocketThread); // Ensure WebSocketThread is also managed if it can be interrupted
+
+        // Attempt to join threads with a timeout to prevent indefinite blocking
+        try {
+            if (SendThread != null) SendThread.join(1000);
+            if (ReceiveThread != null) ReceiveThread.join(1000);
+            if (SocketThread != null) SocketThread.join(1000);
+            if (WebSocketThread != null) WebSocketThread.join(1000);
+        } catch (InterruptedException e){
+            Log.e(TAG, "Interrupted while joining threads", e);
+            Thread.currentThread().interrupt(); // Preserve interrupt status
+        }
+
+        // Close socket resources if they are open
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+            if (output != null) {
+                output.close();
+            }
+            if (input != null) {
+                input.close();
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "IOException during socket resource cleanup in destroy", e);
+        }
+
+        Log.d(TAG, "ASPClientSocket destroy sequence completed.");
     }
 }

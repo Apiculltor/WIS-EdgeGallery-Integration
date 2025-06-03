@@ -175,6 +175,9 @@ dependencies {
 
     //http(s) lib
     implementation "com.android.volley:volley:1.2.1"
+
+    // MediaPipe GenAI for LLM Inference
+    implementation 'com.google.mediapipe:tasks-genai-llminference:0.10.11'
 }
 
 //VOSK ASR prep maodels - need one for each language

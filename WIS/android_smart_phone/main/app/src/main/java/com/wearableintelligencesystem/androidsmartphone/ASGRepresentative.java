@@ -99,6 +99,13 @@ import com.wearableintelligencesystem.androidsmartphone.database.mediafile.Media
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+
+
+//custom, our hybrid AI
+import com.wearableintelligencesystem.androidsmartphone.hybrid.HybridAiCoordinator;
+
 
 class ASGRepresentative {
     private static final String TAG = "WearableAi_ASGRepresentative";
@@ -110,6 +117,12 @@ class ASGRepresentative {
     //receive/send data stream
     PublishSubject<JSONObject> dataObservable;
     Disposable dataSub;
+
+    // Hybrid AI Coordinator
+    private HybridAiCoordinator hybridAiCoordinator;
+    private Disposable mCoordinatorSubscription;
+    private Context mContext;
+
 
     //images saving info
     private long lastImageSave = 0;
@@ -150,17 +163,50 @@ class ASGRepresentative {
     //audio streaming system
     AudioSystem audioSystem;
 
-    Context context;
+    // Context context; // Now mContext
 
     ASGRepresentative(Context context, PublishSubject<JSONObject> dataObservable, MediaFileRepository mMediaFileRepository){
-        this.context = context;
+        this.mContext = context; // Store context
         this.mMediaFileRepository = mMediaFileRepository;
 
         //create a new queue to hold outbound message
         queue = new ArrayBlockingQueue<byte[]>(50);
 
+        //Initialize Hybrid AI Coordinator
+        this.hybridAiCoordinator = new HybridAiCoordinator(this.mContext);
+        if (this.hybridAiCoordinator != null) {
+            mCoordinatorSubscription = this.hybridAiCoordinator.getAggregatedResponseObservable()
+                .subscribeOn(Schedulers.io()) // Perform subscription on I/O thread
+                .observeOn(AndroidSchedulers.mainThread()) // Observe on Main thread if UI updates from here, though sending to socket is fine on IO
+                .subscribe(
+                    aggregatedResponseJson -> {
+                        String responseStr = aggregatedResponseJson.toString();
+                        Log.d(TAG, "ASGRep: Received aggregated response for Vuzix: " + responseStr.substring(0, Math.min(responseStr.length(),100)));
+                        if (asgWebSocket != null && asgWebSocket.isClientConnected()) {
+                            asgWebSocket.send(responseStr);
+                        } else {
+                            Log.e(TAG, "ASGRep: WebSocket not available or client not connected, cannot send response to Vuzix.");
+                        }
+                    },
+                    error -> {
+                        Log.e(TAG, "ASGRep: Error in HybridAiCoordinator response observable", error);
+                        if (asgWebSocket != null && asgWebSocket.isClientConnected()) {
+                            try {
+                                JSONObject errorJson = new JSONObject();
+                                errorJson.put("error_message", "HybridAI processing error on Smartphone: " + error.getMessage());
+                                errorJson.put("message_type_local_error_source", "HybridAiCoordinator_Observable");
+                                asgWebSocket.send(errorJson.toString());
+                            } catch (JSONException e_json) {
+                                Log.e(TAG, "ASGRep: Failed to create JSON for error message to Vuzix", e_json);
+                            }
+                        }
+                    }
+                );
+        }
+
+
         //receive/send data
-        this.dataObservable = dataObservable;
+        this.dataObservable = dataObservable; // This is for internal app events, including from WebSocket server
         dataSub = this.dataObservable.subscribe(i -> handleDataStream(i));
     }
 
@@ -168,12 +214,60 @@ class ASGRepresentative {
     public void handleDataStream(JSONObject data){
         //first check if it's a type we should handle
         try{
-            String type = data.getString(MessageTypes.MESSAGE_TYPE_LOCAL);
-            if (type.equals(MessageTypes.POV_IMAGE)){
-                //handleImage(data.getString(MessageTypes.JPG_BYTES_BASE64), data.getLong(MessageTypes.TIMESTAMP));
-            } 
+            String messageType = data.getString(MessageTypes.MESSAGE_TYPE_LOCAL);
+            Log.d(TAG, "ASGRep: WebSocket data received, type: " + messageType);
+
+            // Example: Define types that should go to LLM
+            if (MessageTypes.LLM_VOICE_COMMAND.equals(messageType) ||
+                MessageTypes.NATURAL_LANGUAGE_QUERY.equals(messageType) ||
+                "CONTEXTUAL_IMAGE_QUERY".equals(messageType) // If JSON for image context comes via WebSocket
+                /* add other custom message types for LLM here */
+               ) {
+                if (hybridAiCoordinator != null) {
+                    // If it's a CONTEXTUAL_IMAGE_QUERY via WebSocket, it might not have the image data itself.
+                    // The image would be from the TCP stream. This assumes correlation or general context.
+                    // For now, pass null for bitmap if message comes from WebSocket without image.
+                    // If image is expected, it should have been handled by handleImage.
+                    // Bitmap imageForThisMessage = null;
+                    // if ("CONTEXTUAL_IMAGE_QUERY".equals(messageType) && data.has("image_correlation_id")){
+                        // Future: logic to get a cached image based on a correlation ID
+                        // For now, this message type implies an image is *expected* to be processed
+                        // which would have arrived via handleImage. This message provides its context/prompt.
+                        // The coordinator might need to handle this correlation.
+                        // For simplicity now, let's assume the image is already being processed via handleImage
+                        // and this message is just a prompt for it.
+                        // So, we might not call processIncomingMessage here again if it's just context for an image from TCP.
+                        // This part needs careful design on how Vuzix sends image + prompt.
+                        // Let's assume for now that if it's a prompt for the *latest* image,
+                        // HybridAiCoordinator might need a way to get that latest image.
+                        // Or, Vuzix sends image (TCP) then this JSON (WS) and coordinator holds latest image.
+                    //     Log.d(TAG, "ASGRep: Routing message of type " + messageType + " to HybridAiCoordinator.");
+                    //     hybridAiCoordinator.processIncomingMessage(data, null); // Null bitmap for WebSocket messages usually
+                    // } else if (!"CONTEXTUAL_IMAGE_QUERY".equals(messageType)) { // Avoid double processing if image comes on TCP
+                    // For now, any message type designated for LLM that comes through WebSocket is assumed to be text-only
+                    // or its image counterpart arrived via TCP and is handled by handleImage.
+                    // The HybridAiCoordinator's IntelligentRouter will decide the strategy.
+                    // If CONTEXTUAL_IMAGE_QUERY comes here, it's likely just the textual part of a multimodal request
+                    // whose image part came/is coming via TCP.
+                    Log.d(TAG, "ASGRep: Routing message of type " + messageType + " to HybridAiCoordinator (from WebSocket).");
+                    hybridAiCoordinator.processIncomingMessage(data, null);
+                    // }
+                } else {
+                     Log.e(TAG, "ASGRep: hybridAiCoordinator is null, cannot process LLM message type: " + messageType);
+                }
+            } else if (MessageTypes.POV_IMAGE.equals(messageType)){
+                 // POV_IMAGE from Websocket is not expected with the current TCP setup for images.
+                 // If it were to be supported, it would need Base64 decoding like before.
+                 // For now, we assume POV_IMAGEs come via TCP socket and are handled in handleImage().
+                 Log.w(TAG, "ASGRep: Received POV_IMAGE message via WebSocket. This path is currently not primary for image handling.");
+            }
+            // else {
+                // Existing handling for other message types (non-LLM)
+                // e.g., if (type.equals(MessageTypes.AUDIO_CHUNK_DECRYPTED)) { audioSystem.handleAudioChunk(data); }
+                // Log.d(TAG, "ASGRep: Message type " + messageType + " not routed to LLM, handled by existing paths or ignored.");
+            // }
         } catch (JSONException e){
-            e.printStackTrace();
+            Log.e(TAG, "ASGRep: JSONException in WebSocket message router", e);
         }
 
     }
@@ -321,31 +415,29 @@ class ASGRepresentative {
     }
 
     public void destroy(){
-        Log.d(TAG, "ASG rep destroying");
+        Log.d(TAG, "ASGRepresentative destroying...");
         killme = true;
 
-        //kill AudioSystem
-        audioSystem.destroy();
+        if (mCoordinatorSubscription != null && !mCoordinatorSubscription.isDisposed()) {
+            mCoordinatorSubscription.dispose();
+        }
+        if (hybridAiCoordinator != null) {
+            hybridAiCoordinator.destroy();
+        }
+        if (dataSub != null && !dataSub.isDisposed()) {
+            dataSub.dispose();
+        }
 
-        //kill asgWebSocket
-        asgWebSocket.destroy();
+        if (audioSystem != null) audioSystem.destroy();
+        if (asgWebSocket != null) asgWebSocket.destroy(); // Assuming asgWebSocket has a destroy method
 
-        //stop sockets
-        heart_beat_handler.removeCallbacksAndMessages(null);
+        if (heart_beat_handler != null) { // Ensure heart_beat_handler is not null
+            heart_beat_handler.removeCallbacksAndMessages(null);
+        }
 
-        //kill this socket
-//        try {
-//            SocketThread.join();
-//            SendThread.join();
-//            ReceiveThread.join();
-//        } catch (InterruptedException e){
-//            e.printStackTrace();
-//            Log.d(TAG, "Error waiting for threads to joing");
-//        }
+        killSocket(); // This should handle closing serverSocket, socket, input, output
 
-        killSocket();
-        Log.d(TAG, "ASG rep destroy complete");
-
+        Log.d(TAG, "ASGRepresentative destroy complete.");
     }
 
     //SOCKET STUFF
@@ -540,16 +632,42 @@ class ASGRepresentative {
 
         //save and process 1 image at set frequency
         long currTime = System.currentTimeMillis();
-        if (((currTime - lastImageSave) / 1000) >= (1 / imageSaveFrequency)){ // divide by 1000 to convert to fps (per second) instead of per millisecond
-            //save image
-            Long imageId = FileUtils.savePicture(context, raw_data, imageTime, mMediaFileRepository);
+        // Image saving logic can remain if needed for other purposes or archival
+        if (((currTime - lastImageSave) / 1000) >= (1 / imageSaveFrequency)){
+            Long imageId = FileUtils.savePicture(mContext, raw_data, imageTime, mMediaFileRepository);
             if (imageId == null){
-                return;
+                // Log.e(TAG, "ASGRep: Failed to save image, but proceeding with LLM processing if bitmap exists.");
+                // Decide if you want to return or proceed. For LLM, bitmap is key.
+            } else {
+                Log.d(TAG, "ASGRep: Image saved with ID: " + imageId);
             }
             lastImageSave = currTime;
+            // The old sendPovImage might be removed or repurposed if its only consumer was LLM related
+            // sendPovImage(raw_data, imageId, imageTime);
+        }
 
-            //send to everyone else
-            sendPovImage(raw_data, imageId, imageTime);
+        // Create JSON message for the image to send to HybridAiCoordinator
+        JSONObject message = new JSONObject();
+        try {
+            message.put(MessageTypes.MESSAGE_TYPE_LOCAL, "CONTEXTUAL_IMAGE_QUERY"); // Or MessageTypes.POV_IMAGE if router handles it
+            message.put(MessageTypes.TIMESTAMP, imageTime);
+            // Default prompt for images coming from TCP. Vuzix might send a WS message with a specific prompt for this image.
+            message.put("prompt", "Describe this image in detail.");
+            // message.put(MessageTypes.IMAGE_ID, imageId); // If still needed for correlation
+        } catch (JSONException e) {
+            Log.e(TAG, "ASGRep: Error creating JSON for image query", e);
+            return;
+        }
+
+        if (hybridAiCoordinator != null) {
+            if (bitmap != null) {
+                 Log.d(TAG, "ASGRep: Sending image to HybridAiCoordinator for processing.");
+                 hybridAiCoordinator.processIncomingMessage(message, bitmap);
+            } else {
+                 Log.e(TAG, "ASGRep: Bitmap was null from raw_data, cannot send to HybridAiCoordinator.");
+            }
+        } else {
+            Log.e(TAG, "ASGRep: hybridAiCoordinator is null, cannot process image.");
         }
     }
 

@@ -63,6 +63,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".external.LlmRequestActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            />
+        <!-- Using a translucent theme to make it less intrusive if it briefly appears -->
+
         <uses-native-library
             android:name="libOpenCL.so"
             android:required="false" />

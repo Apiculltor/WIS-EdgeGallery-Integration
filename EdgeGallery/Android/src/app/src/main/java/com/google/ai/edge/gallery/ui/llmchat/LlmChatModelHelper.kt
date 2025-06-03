@@ -131,6 +131,86 @@ object LlmChatModelHelper {
     Log.d(TAG, "Clean up done.")
   }
 
+  fun runInferenceForExternalRequest(
+      context: Context, // Added context for potential model initialization check
+      model: Model,
+      input: String,
+      image: Bitmap?,
+      onCompleted: (fullResponse: String) -> Unit,
+      onError: (errorMessage: String) -> Unit
+  ) {
+    Log.d(TAG, "runInferenceForExternalRequest called for model: ${model.name}")
+
+    // Ensure model is initialized (simplified check for this subtask)
+    // A more robust solution would involve ModelManagerViewModel or similar
+    // to ensure the model is truly ready or to trigger initialization.
+    if (model.instance == null) {
+      Log.w(TAG, "Model ${model.name} is not initialized for external request. Attempting to initialize.")
+      // Attempt a quick synchronous-like initialization for simplicity here.
+      // This is NOT ideal for a real app - initialization should be managed better
+      // and likely be asynchronous, with this method perhaps returning a future or using coroutines.
+      var initError: String? = null
+      var initializationAttempted = false
+      initialize(context, model) { error -> // Assuming 'initialize' is accessible
+        initError = error
+        initializationAttempted = true
+      }
+
+      // Note: The `initialize` function in LlmChatModelHelper is synchronous in its current form
+      // as it calls onDone directly after try-catch. If it were async, this check would be more complex.
+      if (initError != null && initError!!.isNotEmpty()) {
+        Log.e(TAG, "Model initialization failed for external request: $initError")
+        onError("Model initialization failed for external request: $initError")
+        return
+      }
+      if (model.instance == null) {
+        // This case might happen if initialize didn't set instance despite no error string,
+        // or if it's truly async and hasn't completed (though current helper's initialize is not).
+        Log.e(TAG, "Model could not be initialized for external request (instance is null post-attempt).")
+        onError("Model could not be initialized for external request.")
+        return
+      }
+      Log.d(TAG, "Model ${model.name} was initialized on-the-fly for external request.")
+    }
+
+    val instance = model.instance as? LlmModelInstance
+    if (instance == null) {
+      onError("Model instance is not available or not an LlmModelInstance after initialization check.")
+      return
+    }
+
+    val responseBuilder = StringBuilder()
+    val session = instance.session // Use the (potentially newly created) session
+
+    try {
+      // Add query and image to session
+      // Important: For some models, order might matter (text before image, or vice-versa)
+      // Or session needs reset if it was used before. For a fresh request, this should be fine.
+      // If the session was from a previous, different kind of interaction, resetting it might be safer:
+      // resetSession(model) // Consider if this is needed based on model usage patterns
+
+      session.addQueryChunk(input)
+      if (image != null) {
+        if (model.llmSupportImage) {
+          session.addImage(BitmapImageBuilder(image).build())
+        } else {
+          Log.w(TAG, "Image provided for model ${model.name} that does not support images. Image will be ignored.")
+        }
+      }
+
+      session.generateResponseAsync { partialResult, done ->
+        responseBuilder.append(partialResult)
+        if (done) {
+          Log.d(TAG, "External request inference completed. Full response length: ${responseBuilder.length}")
+          onCompleted(responseBuilder.toString())
+        }
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Exception during external request inference for model ${model.name}", e)
+      onError("Exception during inference: ${e.message}")
+    }
+  }
+
   fun runInference(
     model: Model,
     input: String,

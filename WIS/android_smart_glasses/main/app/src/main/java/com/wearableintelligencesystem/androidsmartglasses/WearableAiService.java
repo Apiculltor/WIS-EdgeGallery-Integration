@@ -44,8 +44,8 @@ import com.androidhiddencamera.config.CameraFacing;
 import com.androidhiddencamera.config.CameraFocus;
 import com.androidhiddencamera.config.CameraImageFormat;
 import com.androidhiddencamera.config.CameraResolution;
-import com.wearableintelligencesystem.androidsmartglasses.archive.GlboxClientSocket;
-import com.wearableintelligencesystem.androidsmartglasses.comms.MessageTypes;
+// import com.wearableintelligencesystem.androidsmartglasses.archive.GlboxClientSocket; // Assuming GlboxClientSocket might not be needed if fully replaced or refactored
+import com.wearableintelligencesystem.androidsmartglasses.comms.MessageTypes; // Ensure this is the Vuzix-side MessageTypes
 import com.wearableintelligencesystem.androidsmartglasses.comms.WifiStatusCallback;
 import com.wearableintelligencesystem.androidsmartglasses.comms.WifiUtils;
 import com.wearableintelligencesystem.androidsmartglasses.sensors.BluetoothScanner;
@@ -66,11 +66,18 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import android.os.Looper; // For Toast on main thread
+import android.widget.Toast; // For Toast
 
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.exceptions.UndeliverableException;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.subjects.PublishSubject;
+
+//WIS Custom UI and Voice
+import com.wearableintelligencesystem.androidsmartglasses.ui.SmartDisplayManager;
+import com.wearableintelligencesystem.androidsmartglasses.voice.HybridVoiceCommands;
+
 
 /**
  * Class strongly based on app example from : https://github.com/kevalpatel2106/android-hidden-camera, Created by Keval on 11-Nov-16 @author {@link 'https://github.com/kevalpatel2106'}
@@ -147,6 +154,10 @@ public class WearableAiService extends HiddenCameraService {
     //audio system
     AudioSystem audioSystem;
 
+    //custom UI and voice handlers
+    private SmartDisplayManager smartDisplayManager;
+    private HybridVoiceCommands hybridVoiceCommands;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -206,6 +217,10 @@ public class WearableAiService extends HiddenCameraService {
             }
         };
         this.registerReceiver(new WifiUtils.WifiReceiver(wifiConnectCallback), wifiFilter);
+
+        //Initialize custom UI and Voice handlers
+        smartDisplayManager = new SmartDisplayManager(this);
+        hybridVoiceCommands = new HybridVoiceCommands(this, this); // Passing 'this' as WearableAiService
     }
 
     class ReceiveAdvThread extends Thread {
@@ -532,18 +547,42 @@ public class WearableAiService extends HiddenCameraService {
             //this will slow down frame rate - need to make asynchronous in future
             curr_cam_image = new byte[bytes.length];
             System.arraycopy(bytes, 0, curr_cam_image, 0, bytes.length);
-            final Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-            byte[] jpg = bmpToJpg(bitmap);
-            if (asp_client_socket != null && asp_client_socket.getConnectState()) {
-                uploadImage(jpg);
+            // final Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length); // Not needed if only sending jpg bytes
+            byte[] jpg = bytes; // yuv.compressToJpeg already returns JPEG bytes
+            // byte[] jpg = bmpToJpg(bitmap); // This is redundant if 'bytes' is already JPEG
+
+            if (asp_client_socket != null && asp_client_socket.getConnectState()) { // Check TCP socket readiness
+                uploadImage(jpg); // Sends image via TCP socket
             }
-            int q_size = asp_client_socket.getImageBuf();
-            //Log.d(TAG, "saving image");
-            //savePicture(jpg);
+
+            // After sending image via TCP, send context message via WebSocket
+            if (asp_client_socket != null && asp_client_socket.getWebSocketStarted() && asp_client_socket.getConnectState()) { // Check WebSocket readiness (getConnectState might refer to TCP, ensure there's a specific WebSocket check or assume getWebSocketStarted is enough)
+                try {
+                    JSONObject imageContextMsg = new JSONObject();
+                    imageContextMsg.put(MessageTypes.MESSAGE_TYPE_LOCAL, MessageTypes.CONTEXTUAL_IMAGE_QUERY);
+                    imageContextMsg.put(MessageTypes.TIMESTAMP, System.currentTimeMillis());
+
+                    JSONObject contextData = new JSONObject();
+                    contextData.put("battery", batteryPercentage);
+                    contextData.put("is_charging", batteryIsCharging);
+                    // Add other context like orientation, activity, etc. if available
+                    // float[] orientation = getDeviceOrientation(); // Placeholder
+                    // contextData.put("orientation_azimuth", orientation[0]);
+                    imageContextMsg.put(MessageTypes.CONTEXT_DATA, contextData);
+                    imageContextMsg.put(MessageTypes.PROMPT, "Describe what you see in detail, considering the context."); // Example prompt
+
+                    asp_client_socket.sendJson(imageContextMsg);
+                    Log.d(TAG, "Sent CONTEXTUAL_IMAGE_QUERY via WebSocket.");
+                } catch (JSONException e) {
+                    Log.e(TAG, "Error creating or sending CONTEXTUAL_IMAGE_QUERY JSON", e);
+                }
+            }
+
+            // int q_size = asp_client_socket.getImageBuf(); // This might be for TCP queue
             last_sent_time = curr_time;
         }
 
-        if (now_frame_rate <= fps_to_proc) {
+        if (now_proc_rate <= fps_to_proc) { // Corrected variable name from now_frame_rate to now_proc_rate
             last_proc_time = curr_time;
             int width = parameters.getPreviewSize().width;
             int height = parameters.getPreviewSize().height;
@@ -647,16 +686,70 @@ public class WearableAiService extends HiddenCameraService {
     private void handleDataStream(JSONObject data){
         try {
             String dataType = data.getString(MessageTypes.MESSAGE_TYPE_LOCAL);
-            if (dataType.equals(MessageTypes.UI_UPDATE_ACTION)){
+            Log.d(TAG, "WearableAiService handleDataStream received: " + dataType);
+
+            if (MessageTypes.UI_UPDATE_ACTION.equals(dataType)){ // Existing type
                 if (data.has(MessageTypes.PHONE_CONNECTION_STATUS)){
                     phoneConnected = data.getBoolean(MessageTypes.PHONE_CONNECTION_STATUS);
                     updateUi();
                 }
+            } else if (MessageTypes.HYBRID_RESPONSE.equals(dataType)) { // New type
+                String displayText = data.optString(MessageTypes.DISPLAY_TEXT, "No display text in hybrid response.");
+                String llmText = data.optString(MessageTypes.LLM_TEXT);
+                String wisText = data.optString(MessageTypes.WIS_TEXT);
+                String errorMessage = data.optString(MessageTypes.ERROR_MESSAGE);
+
+                Log.i(TAG, "HYBRID_RESPONSE: Display = '" + displayText + "', LLM = '" + llmText + "', WIS = '" + wisText + "', Error = '" + errorMessage + "'");
+
+                if (smartDisplayManager != null) {
+                    smartDisplayManager.displayHybridResponse(data);
+                } else { // Fallback if smartDisplayManager is somehow null
+                    final String toastMsg = "Hybrid (no SM): " + data.optString(MessageTypes.DISPLAY_TEXT, "Raw data");
+                    new android.os.Handler(Looper.getMainLooper()).post(() -> Toast.makeText(mContext, toastMsg, Toast.LENGTH_LONG).show());
+                }
             }
+            // ... any other existing handlers ...
         } catch (JSONException e) {
-            e.printStackTrace();
+            Log.e(TAG, "WearableAiService handleDataStream JSONException", e);
+        } catch (Exception e) {
+            Log.e(TAG, "WearableAiService handleDataStream Exception", e);
         }
     }
+
+    // Placeholder for sending text queries to LLM
+    public void sendLlmTextQuery(String textQuery, String queryType) {
+        if (asp_client_socket != null && asp_client_socket.getWebSocketStarted() && asp_client_socket.getConnectState()) {
+            try {
+                JSONObject textQueryMsg = new JSONObject();
+                // Using LLM_TEXT_QUERY as a generic type, could be LLM_VOICE_COMMAND if from voice
+                textQueryMsg.put(MessageTypes.MESSAGE_TYPE_LOCAL, MessageTypes.LLM_TEXT_QUERY);
+                textQueryMsg.put(MessageTypes.TIMESTAMP, System.currentTimeMillis());
+                textQueryMsg.put(MessageTypes.PROMPT, textQuery); // Or MessageTypes.COMMAND_TEXT if using LLM_VOICE_COMMAND
+                textQueryMsg.put(MessageTypes.QUERY_TYPE, queryType); // Optional: to guide smartphone logic
+
+                asp_client_socket.sendJson(textQueryMsg);
+                Log.d(TAG, "Sent LLM_TEXT_QUERY (" + queryType + ") via WebSocket: " + textQuery);
+            } catch (JSONException e) {
+                Log.e(TAG, "Error creating or sending LLM_TEXT_QUERY JSON", e);
+            }
+        } else {
+            Log.w(TAG, "Cannot send LLM text query, WebSocket not ready.");
+            // Optionally, provide feedback to user that connection is not active
+            new android.os.Handler(Looper.getMainLooper()).post(() -> Toast.makeText(mContext, "Not connected to phone for AI query.", Toast.LENGTH_SHORT).show());
+        }
+    }
+
+    public void onVoiceCommandRecognized(String command) {
+        Log.d(TAG, "onVoiceCommandRecognized: " + command);
+        if (hybridVoiceCommands != null) {
+            hybridVoiceCommands.processVoiceCommand(command);
+        } else {
+            Log.e(TAG, "HybridVoiceCommands is null, cannot process voice command.");
+            // Fallback to older system or direct send if necessary
+            // sendLlmTextQuery(command, "DIRECT_VOICE_FALLBACK");
+        }
+    }
+
 
     //wake up the screen
     private void wakeupScreen() {

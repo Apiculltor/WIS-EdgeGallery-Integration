@@ -146,3 +146,30 @@ public class MessageTypes {
 }
 
 
+
+    // HYBRID INTEGRATION - New message types for WIS + EdgeGallery
+    public static final String HYBRID_RESPONSE = "hybrid_response";
+    public static final String HYBRID_IMMEDIATE_RESPONSE = "hybrid_immediate_response";
+    public static final String HYBRID_ENHANCED_RESPONSE = "hybrid_enhanced_response";
+    public static final String HYBRID_AGGREGATED_RESPONSE = "hybrid_aggregated_response";
+    public static final String HYBRID_ERROR_RESPONSE = "hybrid_error_response";
+    
+    // LLM-specific message types
+    public static final String LLM_IMAGE_ANALYSIS_REQUEST = "llm_image_analysis_request";
+    public static final String LLM_IMAGE_ANALYSIS_RESPONSE = "llm_image_analysis_response";
+    public static final String LLM_AUDIO_ANALYSIS_REQUEST = "llm_audio_analysis_request";
+    public static final String LLM_AUDIO_ANALYSIS_RESPONSE = "llm_audio_analysis_response";
+    public static final String LLM_GENERIC_RESPONSE = "llm_generic_response";
+    public static final String LLM_ERROR_RESPONSE = "llm_error_response";
+    
+    // Enhanced message types
+    public static final String NATURAL_LANGUAGE_QUERY = "natural_language_query";
+    public static final String CONTEXTUAL_ENHANCEMENT = "contextual_enhancement";
+    public static final String PROACTIVE_INSIGHT = "proactive_insight";
+    public static final String PROCESSING_ERROR = "processing_error";
+    public static final String SMART_SUMMARY = "smart_summary";
+    public static final String ACTION_SUGGESTION = "action_suggestion";
+    
+    // Display and UI message types
+    public static final String DISPLAY_LAYERS_UPDATE = "display_layers_update";
+    public static final String MULTI_LAYER_RESPONSE = "multi_layer_response";

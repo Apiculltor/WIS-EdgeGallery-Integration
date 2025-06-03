@@ -118,12 +118,6 @@ class ASGRepresentative {
     //database
     private MediaFileRepository mMediaFileRepository = null;
 
-    // HYBRID INTEGRATION - New components for WIS + EdgeGallery
-    private HybridAiCoordinator hybridCoordinator;
-    private CompositeDisposable hybridDisposables;
-    private boolean isHybridModeEnabled = true;
-    private Context context;
-
     //SOCKET STUFF
     //socket
     public AspWebsocketServer asgWebSocket; 
@@ -168,9 +162,6 @@ class ASGRepresentative {
         //receive/send data
         this.dataObservable = dataObservable;
         dataSub = this.dataObservable.subscribe(i -> handleDataStream(i));
-        
-        // HYBRID INTEGRATION - Initialize hybrid components
-        initializeHybridComponents();
     }
 
     //receive audio and send to vosk
@@ -696,147 +687,3 @@ class ASGRepresentative {
 
 
 }
-// HYBRID INTEGRATION - Added imports for EdgeGallery integration
-import com.wearableintelligencesystem.androidsmartphone.hybrid.HybridAiCoordinator;
-import com.wearableintelligencesystem.androidsmartphone.hybrid.ProcessingStrategy;
-import com.wearableintelligencesystem.androidsmartphone.edgegallery.EdgeGalleryLlmProcessor;
-
-// Additional imports for enhanced message handling
-import io.reactivex.rxjava3.disposables.CompositeDisposable;
-import org.json.JSONArray;
-
-    // HYBRID INTEGRATION - Initialize hybrid AI components
-    private void initializeHybridComponents() {
-        try {
-            Log.d(TAG, "Initializing hybrid AI components...");
-            
-            // Initialize disposables for RxJava subscriptions
-            hybridDisposables = new CompositeDisposable();
-            
-            // Initialize hybrid coordinator
-            hybridCoordinator = new HybridAiCoordinator(context);
-            
-            // Subscribe to hybrid responses
-            hybridDisposables.add(
-                hybridCoordinator.getResponseObservable()
-                    .subscribe(
-                        this::handleHybridResponse,
-                        this::handleHybridError
-                    )
-            );
-            
-            Log.d(TAG, "Hybrid AI components initialized successfully");
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to initialize hybrid components", e);
-            isHybridModeEnabled = false;
-        }
-    }
-
-    // HYBRID INTEGRATION - Handle responses from hybrid processing
-    private void handleHybridResponse(JSONObject response) {
-        try {
-            Log.d(TAG, "Received hybrid response: " + response.getString("message_type"));
-            
-            // Forward hybrid response to Vuzix Blade via WebSocket
-            dataObservable.onNext(response);
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Error handling hybrid response", e);
-        }
-    }
-
-    // HYBRID INTEGRATION - Handle hybrid processing errors
-    private void handleHybridError(Throwable error) {
-        Log.e(TAG, "Hybrid processing error", error);
-        
-        try {
-            // Send error notification to Vuzix
-            JSONObject errorResponse = new JSONObject();
-            errorResponse.put(MessageTypes.MESSAGE_TYPE_LOCAL, "hybrid_error");
-            errorResponse.put("error", "Hybrid processing temporarily unavailable");
-            errorResponse.put("fallback_mode", "traditional_wis");
-            
-            dataObservable.onNext(errorResponse);
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "Error creating hybrid error response", e);
-        }
-    }
-
-    // HYBRID INTEGRATION - Enhanced message routing
-    private void routeIncomingMessage(JSONObject message) {
-        if (!isHybridModeEnabled || hybridCoordinator == null || !hybridCoordinator.isAvailable()) {
-            // Fallback to traditional WIS processing
-            handleDataStreamTraditional(message);
-            return;
-        }
-        
-        try {
-            String messageType = message.getString(MessageTypes.MESSAGE_TYPE_LOCAL);
-            
-            // Route specific message types to hybrid processing
-            if (shouldUseHybridProcessing(messageType, message)) {
-                Log.d(TAG, "Routing to hybrid processing: " + messageType);
-                hybridCoordinator.processParallel(message);
-            } else {
-                // Use traditional WIS processing
-                handleDataStreamTraditional(message);
-            }
-            
-        } catch (JSONException e) {
-            Log.e(TAG, "Error routing message", e);
-            handleDataStreamTraditional(message);
-        }
-    }
-
-    // HYBRID INTEGRATION - Determine if message should use hybrid processing
-    private boolean shouldUseHybridProcessing(String messageType, JSONObject message) {
-        // Image queries are good candidates for LLM enhancement
-        if (MessageTypes.POV_IMAGE_QUERY.equals(messageType)) {
-            return true;
-        }
-        
-        // Audio with transcription can benefit from LLM analysis
-        if (MessageTypes.AUDIO_CHUNK_DECRYPTED.equals(messageType)) {
-            String transcript = message.optString("transcript", "");
-            return transcript.length() > 10; // Only for substantial transcripts
-        }
-        
-        // Voice commands that might need natural language processing
-        if (MessageTypes.VOICE_COMMAND_STREAM_EVENT.equals(messageType)) {
-            return true;
-        }
-        
-        // Natural language queries
-        if ("natural_language_query".equals(messageType)) {
-            return true;
-        }
-        
-        return false;
-    }
-
-    // HYBRID INTEGRATION - Traditional WIS processing (unchanged behavior)
-    private void handleDataStreamTraditional(JSONObject data) {
-        // This is the original handleDataStream logic - unchanged
-        try {
-            String type = data.getString(MessageTypes.MESSAGE_TYPE_LOCAL);
-            if (type.equals(MessageTypes.POV_IMAGE)) {
-                // Original POV image handling
-            }
-            // Add other original message type handling here
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
-    }
-
-    // HYBRID INTEGRATION - Cleanup method
-    public void cleanupHybridComponents() {
-        if (hybridDisposables != null) {
-            hybridDisposables.clear();
-        }
-        
-        if (hybridCoordinator != null) {
-            hybridCoordinator.cleanup();
-        }
-    }

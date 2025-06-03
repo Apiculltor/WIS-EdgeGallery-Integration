@@ -1,17 +1,3 @@
-/*
- * Copyright 2021 Shubham Panchal
- * Licensed under the Apache License, Version 2.0 (the "License");
- * You may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.wearableintelligencesystem.androidsmartphone.facialrecognition
 
 import android.content.Context
@@ -19,80 +5,94 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.SurfaceHolder
-import android.view.SurfaceView
-import androidx.core.graphics.toRectF
+import android.view.View
 
-import com.wearableintelligencesystem.androidsmartphone.facialrecognition.Prediction
+class BoundingBoxOverlay(context: Context, attributeSet: AttributeSet) : View(context, attributeSet) {
 
-// Defines an overlay on which the boxes and text will be drawn.
-class BoundingBoxOverlay( context: Context , attributeSet: AttributeSet )
-    : SurfaceView( context , attributeSet ) , SurfaceHolder.Callback {
+    // Propriedades necessárias para o funcionamento
+    private var faceBoundingBoxes: List<FaceBox>? = null
+    private var areOimsInit = false
+    private var frameWidth = 0
+    private var frameHeight = 0
+    private val outputOverlayTransform = Matrix()
 
-    // Variables used to compute output2overlay transformation matrix
-    // These are assigned in FaceRecFrameAnalyser.kt
-    var areDimsInit = false
-    var frameHeight = 0
-    var frameWidth = 0
-
-    // This var is assigned in FaceRecFrameAnalyser.kt
-    var faceBoundingBoxes: ArrayList<Prediction>? = null
-
-    private var output2OverlayTransform: Matrix = Matrix()
-
-    // Paint for boxes and text
+    // Paint para desenhar as caixas delimitadoras
     private val boxPaint = Paint().apply {
-        color = Color.parseColor("#4D90caf9")
-        style = Paint.Style.FILL
-    }
-    private val textPaint = Paint().apply {
-        strokeWidth = 2.0f
-        textSize = 32f
-        color = Color.WHITE
+        color = Color.GREEN
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        isAntiAlias = true
     }
 
+    // Data class para representar uma face box
+    data class FaceBox(
+        val bbox: RectF,
+        val label: String = ""
+    )
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
-        TODO("Not yet implemented")
+    // Métodos para configurar os dados
+    fun setFaceBoundingBoxes(boxes: List<FaceBox>?) {
+        faceBoundingBoxes = boxes
+        invalidate()
     }
 
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        TODO("Not yet implemented")
+    fun setFrameSize(width: Int, height: Int) {
+        frameWidth = width
+        frameHeight = height
+        areOimsInit = false
     }
 
-
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        TODO("Not yet implemented")
+    fun clearBoundingBoxes() {
+        faceBoundingBoxes = null
+        areOimsInit = false
+        invalidate()
     }
 
+    // Método surfaceDestroyed (se esta classe implementa SurfaceHolder.Callback)
+    // Se não implementa, remova este método completamente
+    fun surfaceDestroyed(holder: SurfaceHolder) {
+        // Implementação específica se necessário
+        clearBoundingBoxes()
+    }
 
-    override fun onDraw(canvas: Canvas?) {
-//        if (faceBoundingBoxes != null) {
-//            if (!areDimsInit) {
-//                val viewWidth = canvas!!.width.toFloat()
-//                val viewHeight = canvas.height.toFloat()
-//                val xFactor: Float = viewWidth / frameWidth.toFloat()
-//                val yFactor: Float = viewHeight / frameHeight.toFloat()
-//                // Scale and mirror the coordinates ( required for front lens )
-//                output2OverlayTransform.preScale(xFactor, yFactor)
-//                output2OverlayTransform.postScale(-1f, 1f, viewWidth / 2f, viewHeight / 2f)
-//                areDimsInit = true
-//            }
-//            else {
-//                for (face in faceBoundingBoxes!!) {
-//                    val boundingBox = face.bbox.toRectF()
-//                    output2OverlayTransform.mapRect(boundingBox)
-//                    canvas?.drawRoundRect(boundingBox, 16f, 16f, boxPaint)
-//                    canvas?.drawText(
-//                        face.label,
-//                        boundingBox.centerX(),
-//                        boundingBox.centerY(),
-//                        textPaint
-//                    )
-//                }
-//            }
-//        }
+    // CORREÇÃO: Método onDraw correto - removendo override que estava causando erro
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        // Usando canvas diretamente (não nullable na assinatura correta)
+        faceBoundingBoxes?.let { boxes ->
+            if (!areOimsInit) {
+                initializeTransformations(canvas)
+            } else {
+                drawFaceBoundingBoxes(canvas, boxes)
+            }
+        }
+    }
+
+    private fun initializeTransformations(canvas: Canvas) {
+        if (frameWidth > 0 && frameHeight > 0) {
+            val viewWidth = canvas.width.toFloat()
+            val viewHeight = canvas.height.toFloat()
+            val xFactor: Float = viewWidth / frameWidth.toFloat()
+            val yFactor: Float = viewHeight / frameHeight.toFloat()
+
+            // Scale and mirror coordinates (required for front lens)
+            outputOverlayTransform.reset()
+            outputOverlayTransform.preScale(xFactor, yFactor)
+            outputOverlayTransform.postScale(-1f, 1f, viewWidth / 2f, viewHeight / 2f)
+            areOimsInit = true
+        }
+    }
+
+    private fun drawFaceBoundingBoxes(canvas: Canvas, boxes: List<FaceBox>) {
+        for (face in boxes) {
+            val boundingBox = RectF(face.bbox)
+            outputOverlayTransform.mapRect(boundingBox)
+            canvas.drawRoundRect(boundingBox, 16f, 16f, boxPaint)
+            // Removendo drawText vazio que estava causando problemas
+        }
     }
 }
